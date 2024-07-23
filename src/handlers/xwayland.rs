@@ -559,3 +559,172 @@ impl Pinnacle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct MockX11Surface {
+        is_popup: bool,
+        window_type: Option<WmWindowType>,
+        size_hints: Option<SizeHints>,
+    }
+
+    impl MockX11Surface {
+        fn is_popup(&self) -> bool {
+            self.is_popup
+        }
+
+        fn window_type(&self) -> Option<WmWindowType> {
+            self.window_type
+        }
+
+        fn size_hints(&self) -> Option<SizeHints> {
+            self.size_hints.clone()
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SizeHints {
+        min_size: Option<(i32, i32)>,
+        max_size: Option<(i32, i32)>,
+    }
+
+    fn should_float(surface: &MockX11Surface) -> bool {
+        let is_popup_by_type = surface.window_type().is_some_and(|typ| {
+            matches!(
+                typ,
+                WmWindowType::Dialog
+                    | WmWindowType::Utility
+                    | WmWindowType::Toolbar
+                    | WmWindowType::Splash
+            )
+        });
+        let is_popup_by_size = surface.size_hints().map_or(false, |size_hints| {
+            let Some((min_w, min_h)) = size_hints.min_size else {
+                return false;
+            };
+            let Some((max_w, max_h)) = size_hints.max_size else {
+                return false;
+            };
+            min_w > 0 && min_h > 0 && (min_w == max_w || min_h == max_h)
+        });
+        surface.is_popup() || is_popup_by_type || is_popup_by_size
+    }
+
+    #[test]
+    fn test_case_1() {
+        let surface = MockX11Surface {
+            is_popup: true,
+            window_type: None,
+            size_hints: None,
+        };
+        assert!(should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_2() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: Some(WmWindowType::Dialog),
+            size_hints: None,
+        };
+        assert!(should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_3() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: None,
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_4() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: Some(WmWindowType::Normal),
+            size_hints: None,
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_5() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: Some(SizeHints {
+                min_size: Some((100, 100)),
+                max_size: Some((100, 100)),
+            }),
+        };
+        assert!(should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_6() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: Some(SizeHints {
+                min_size: Some((100, 100)),
+                max_size: Some((200, 200)),
+            }),
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_7() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: Some(SizeHints {
+                min_size: Some((100, 100)),
+                max_size: None,
+            }),
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_8() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: Some(SizeHints {
+                min_size: None,
+                max_size: Some((100, 100)),
+            }),
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_9() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: Some(SizeHints {
+                min_size: None,
+                max_size: None,
+            }),
+        };
+        assert!(!should_float(&surface));
+    }
+
+    #[test]
+    fn test_case_10() {
+        let surface = MockX11Surface {
+            is_popup: false,
+            window_type: None,
+            size_hints: None,
+        };
+        assert!(!should_float(&surface));
+    }
+}
