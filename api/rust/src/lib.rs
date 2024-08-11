@@ -85,6 +85,7 @@
 //! You can peruse the documentation for things to configure.
 
 use futures::{Future, StreamExt};
+use hyper_util::rt::TokioIo;
 use input::Input;
 use layout::Layout;
 use output::Output;
@@ -129,7 +130,6 @@ pub use pinnacle_api_macros::config;
 #[cfg(feature = "snowcap")]
 pub use snowcap_api;
 pub use tokio;
-pub use xkbcommon;
 
 // These are all `RwLock<Option>` instead of `OnceLock` purely for the fact that
 // tonic doesn't like it when you use clients across tokio runtimes, and these are static
@@ -263,11 +263,11 @@ impl ApiModules {
 pub async fn connect() -> Result<(), Box<dyn std::error::Error>> {
     // port doesn't matter, we use a unix socket
     let channel = Endpoint::try_from("http://[::]:50051")?
-        .connect_with_connector(service_fn(|_: Uri| {
-            tokio::net::UnixStream::connect(
-                std::env::var("PINNACLE_GRPC_SOCKET")
-                    .expect("PINNACLE_GRPC_SOCKET was not set; is Pinnacle running?"),
-            )
+        .connect_with_connector(service_fn(|_: Uri| async {
+            let path = std::env::var("PINNACLE_GRPC_SOCKET")
+                .expect("PINNACLE_GRPC_SOCKET was not set; is Pinnacle running?");
+
+            Ok::<_, std::io::Error>(TokioIo::new(tokio::net::UnixStream::connect(path).await?))
         }))
         .await
         .unwrap();

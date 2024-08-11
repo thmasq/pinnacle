@@ -5,6 +5,7 @@ pub mod window;
 use std::{ffi::OsString, pin::Pin, process::Stdio};
 
 use pinnacle_api_defs::pinnacle::{
+    self,
     input::v0alpha1::{
         input_service_server,
         set_libinput_setting_request::{AccelProfile, ClickMethod, ScrollMethod, TapButtonMap},
@@ -33,8 +34,8 @@ use pinnacle_api_defs::pinnacle::{
         },
     },
     v0alpha1::{
-        pinnacle_service_server, PingRequest, PingResponse, QuitRequest, ReloadConfigRequest,
-        SetOrToggle, ShutdownWatchRequest, ShutdownWatchResponse,
+        pinnacle_service_server, BackendRequest, BackendResponse, PingRequest, PingResponse,
+        QuitRequest, ReloadConfigRequest, SetOrToggle, ShutdownWatchRequest, ShutdownWatchResponse,
     },
 };
 use smithay::{
@@ -43,7 +44,7 @@ use smithay::{
     output::Scale,
     reexports::{calloop, input as libinput},
 };
-use sysinfo::ProcessRefreshKind;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tokio::{
     io::AsyncBufReadExt,
     sync::mpsc::{unbounded_channel, UnboundedSender},
@@ -144,7 +145,7 @@ fn run_bidirectional_streaming<F1, F2, I, O>(
     with_out_stream_and_in_stream_join_handle: F2,
 ) -> Result<Response<ResponseStream<O>>, Status>
 where
-    F1: Fn(&mut State, Result<I, Status>) + Clone + Send + 'static,
+    F1: Fn(&mut State, I) + Clone + Send + 'static,
     F2: FnOnce(&mut State, UnboundedSender<Result<O, Status>>, JoinHandle<()>) + Send + 'static,
     I: Send + 'static,
     O: Send + 'static,
@@ -155,15 +156,24 @@ where
 
     let with_in_stream = async move {
         while let Some(request) = in_stream.next().await {
-            let on_client_request = on_client_request.clone();
-            // TODO: handle error
-            let _ = fn_sender_clone.send(Box::new(move |state: &mut State| {
-                on_client_request(state, request);
-            }));
+            match request {
+                Ok(request) => {
+                    let on_client_request = on_client_request.clone();
+                    // TODO: handle error
+                    let _ = fn_sender_clone.send(Box::new(move |state: &mut State| {
+                        on_client_request(state, request);
+                    }));
+                }
+                Err(err) => {
+                    debug!("bidirectional stream error: {err}");
+                    break;
+                }
+            }
         }
     };
 
     let join_handle = tokio::spawn(with_in_stream);
+    // let join_handle = tokio::spawn(async {});
 
     let with_out_stream_and_in_stream_join_handle = Box::new(|state: &mut State| {
         with_out_stream_and_in_stream_join_handle(state, sender, join_handle);
@@ -227,6 +237,26 @@ impl pinnacle_service_server::PinnacleService for PinnacleService {
             state.pinnacle.config.shutdown_sender.replace(sender);
         })
     }
+
+    async fn backend(
+        &self,
+        _request: Request<BackendRequest>,
+    ) -> Result<Response<BackendResponse>, Status> {
+        run_unary(&self.sender, |state| {
+            let backend = match &state.backend {
+                crate::backend::Backend::Winit(_) => pinnacle::v0alpha1::Backend::Window,
+                crate::backend::Backend::Udev(_) => pinnacle::v0alpha1::Backend::Tty,
+                #[cfg(feature = "testing")]
+                crate::backend::Backend::Dummy(_) => pinnacle::v0alpha1::Backend::Tty, // unused
+            };
+
+            let mut response = BackendResponse::default();
+            response.set_backend(backend);
+
+            response
+        })
+        .await
+    }
 }
 
 pub struct InputService {
@@ -254,19 +284,11 @@ impl input_service_server::InputService for InputService {
         let modifiers = request
             .modifiers()
             .fold(ModifierMask::empty(), |acc, modifier| match modifier {
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Unspecified => acc,
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Shift => {
-                    acc | ModifierMask::SHIFT
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Ctrl => {
-                    acc | ModifierMask::CTRL
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Alt => {
-                    acc | ModifierMask::ALT
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Super => {
-                    acc | ModifierMask::SUPER
-                }
+                pinnacle::input::v0alpha1::Modifier::Unspecified => acc,
+                pinnacle::input::v0alpha1::Modifier::Shift => acc | ModifierMask::SHIFT,
+                pinnacle::input::v0alpha1::Modifier::Ctrl => acc | ModifierMask::CTRL,
+                pinnacle::input::v0alpha1::Modifier::Alt => acc | ModifierMask::ALT,
+                pinnacle::input::v0alpha1::Modifier::Super => acc | ModifierMask::SUPER,
             });
         let key = request
             .key
@@ -322,19 +344,11 @@ impl input_service_server::InputService for InputService {
         let modifiers = request
             .modifiers()
             .fold(ModifierMask::empty(), |acc, modifier| match modifier {
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Unspecified => acc,
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Shift => {
-                    acc | ModifierMask::SHIFT
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Ctrl => {
-                    acc | ModifierMask::CTRL
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Alt => {
-                    acc | ModifierMask::ALT
-                }
-                pinnacle_api_defs::pinnacle::input::v0alpha1::Modifier::Super => {
-                    acc | ModifierMask::SUPER
-                }
+                pinnacle::input::v0alpha1::Modifier::Unspecified => acc,
+                pinnacle::input::v0alpha1::Modifier::Shift => acc | ModifierMask::SHIFT,
+                pinnacle::input::v0alpha1::Modifier::Ctrl => acc | ModifierMask::CTRL,
+                pinnacle::input::v0alpha1::Modifier::Alt => acc | ModifierMask::ALT,
+                pinnacle::input::v0alpha1::Modifier::Super => acc | ModifierMask::SUPER,
             });
         let button = request
             .button
@@ -646,13 +660,13 @@ impl process_service_server::ProcessService for ProcessService {
                 state
                     .pinnacle
                     .system_processes
-                    .refresh_processes_specifics(ProcessRefreshKind::new());
+                    .refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
 
                 let compositor_pid = std::process::id();
                 let already_running = state
                     .pinnacle
                     .system_processes
-                    .processes_by_exact_name(&arg0)
+                    .processes_by_exact_name(arg0.as_ref())
                     .any(|proc| {
                         proc.parent()
                             .is_some_and(|parent_pid| parent_pid.as_u32() == compositor_pid)
@@ -838,16 +852,14 @@ impl tag_service_server::TagService for TagService {
 
             if tag.set_active(active) {
                 state.pinnacle.signal_state.tag_active.signal(|buf| {
-                    buf.push_back(
-                        pinnacle_api_defs::pinnacle::signal::v0alpha1::TagActiveResponse {
-                            tag_id: Some(tag.id().to_inner()),
-                            active: Some(active),
-                        },
-                    );
+                    buf.push_back(pinnacle::signal::v0alpha1::TagActiveResponse {
+                        tag_id: Some(tag.id().to_inner()),
+                        active: Some(active),
+                    });
                 });
             }
 
-            state.pinnacle.fixup_xwayland_window_layering();
+            state.pinnacle.update_xwayland_stacking_order();
 
             state.pinnacle.begin_layout_transaction(&output);
             state.pinnacle.request_layout(&output);
@@ -879,28 +891,24 @@ impl tag_service_server::TagService for TagService {
                 for op_tag in op_state.tags.iter() {
                     if op_tag.set_active(false) {
                         state.pinnacle.signal_state.tag_active.signal(|buf| {
-                            buf.push_back(
-                                pinnacle_api_defs::pinnacle::signal::v0alpha1::TagActiveResponse {
-                                    tag_id: Some(op_tag.id().to_inner()),
-                                    active: Some(false),
-                                },
-                            );
+                            buf.push_back(pinnacle::signal::v0alpha1::TagActiveResponse {
+                                tag_id: Some(op_tag.id().to_inner()),
+                                active: Some(false),
+                            });
                         });
                     }
                 }
                 if tag.set_active(true) {
                     state.pinnacle.signal_state.tag_active.signal(|buf| {
-                        buf.push_back(
-                            pinnacle_api_defs::pinnacle::signal::v0alpha1::TagActiveResponse {
-                                tag_id: Some(tag.id().to_inner()),
-                                active: Some(true),
-                            },
-                        );
+                        buf.push_back(pinnacle::signal::v0alpha1::TagActiveResponse {
+                            tag_id: Some(tag.id().to_inner()),
+                            active: Some(true),
+                        });
                     });
                 }
             });
 
-            state.pinnacle.fixup_xwayland_window_layering();
+            state.pinnacle.update_xwayland_stacking_order();
 
             state.pinnacle.begin_layout_transaction(&output);
             state.pinnacle.request_layout(&output);
@@ -948,7 +956,7 @@ impl tag_service_server::TagService for TagService {
                 });
             }
 
-            state.pinnacle.fixup_xwayland_window_layering();
+            state.pinnacle.update_xwayland_stacking_order();
 
             AddResponse { tag_ids }
         })
@@ -990,7 +998,7 @@ impl tag_service_server::TagService for TagService {
                 }
             }
 
-            state.pinnacle.fixup_xwayland_window_layering();
+            state.pinnacle.update_xwayland_stacking_order();
         })
         .await
     }
